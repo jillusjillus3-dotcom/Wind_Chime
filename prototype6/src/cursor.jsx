@@ -32,9 +32,22 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
   // Active gusts per body id: { body, startTime, duration, forceX, forceY }
   const activeGusts = new Map();
 
+  const handleReset = () => {
+    isPointerOnScreen = false;
+    mousePos.x = -1000;
+    mousePos.y = -1000;
+    prevMousePos.x = -1000;
+    prevMousePos.y = -1000;
+    velocity.x = 0;
+    velocity.y = 0;
+    activeGusts.clear();
+  };
+
   const handlePointerMove = (event) => {
-    if (!isPointerOnScreen) {
-      isPointerOnScreen = true;
+    // 1. Filter out secondary gesture pointers (Finger #2, Finger #3 during 3-finger touchpad swipes)
+    if (event.isPrimary === false) {
+      handleReset();
+      return;
     }
 
     const now = performance.now();
@@ -64,9 +77,19 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
     const dx = mousePos.x - prevMousePos.x;
     const dy = mousePos.y - prevMousePos.y;
 
-    // Normalize per-frame velocity based on time delta (in ms)
-    const instVx = (dx / dt) * 16.67;
-    const instVy = (dy / dt) * 16.67;
+    // 2. Clamp maximum single-frame displacement to prevent gesture teleportation / multi-touch jumps
+    const dist = Math.hypot(dx, dy);
+    const maxDistPerFrame = 35;
+    let clampedDx = dx;
+    let clampedDy = dy;
+    if (dist > maxDistPerFrame && dist > 0) {
+      clampedDx = (dx / dist) * maxDistPerFrame;
+      clampedDy = (dy / dist) * maxDistPerFrame;
+    }
+
+    // 3. Normalize per-frame velocity based on time delta (in ms) and clamp to safe limits
+    const instVx = Math.min(Math.max((clampedDx / dt) * 16.67, -20), 20);
+    const instVy = Math.min(Math.max((clampedDy / dt) * 16.67, -20), 20);
 
     // Exponential moving average smoothing
     velocity.x = velocity.x * 0.4 + instVx * 0.6;
@@ -80,17 +103,18 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
   };
 
   const handleMouseLeave = () => {
-    isPointerOnScreen = false;
-    mousePos.x = -1000;
-    mousePos.y = -1000;
-    velocity.x = 0;
-    velocity.y = 0;
+    handleReset();
   };
 
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerenter", handlePointerMove);
   window.addEventListener("pointerdown", handlePointerMove);
   document.addEventListener("mouseleave", handleMouseLeave);
+  window.addEventListener("blur", handleReset);
+  window.addEventListener("focus", handleReset);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) handleReset();
+  });
 
   /**
    * Generates or refreshes active gust impulses for all connected bodies (ballA, rectangleA, chimes) within 220px wind field.
@@ -100,7 +124,7 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
     if (rawSpeed < 0.05) return;
 
     // Speed multiplier clamped so fast swipes create strong gusts without physics instability
-    const speedFactor = Math.min(Math.max(rawSpeed / 4.0, 0.2), 3.0);
+    const speedFactor = Math.min(Math.max(rawSpeed / 4.0, 0.2), 2.5);
 
     const velUnitX = rawSpeed > 0.001 ? velocity.x / rawSpeed : 0;
     const velUnitY = rawSpeed > 0.001 ? velocity.y / rawSpeed : 0;
@@ -140,7 +164,7 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
 
       // Base force calculation scaled with body mass so heavier bodies (ballA & rectangleA) respond visibly
       const massScale = Math.sqrt(body.mass || 2.0);
-      let baseForce = falloff * speedFactor * 0.00035 * massScale;
+      let baseForce = falloff * speedFactor * 0.0003 * massScale;
 
       // 8% random gust variation (±8% range: 0.92 to 1.08)
       const gustVariation = 1.0 + (Math.random() - 0.5) * 0.16;
@@ -199,6 +223,8 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
     window.removeEventListener("pointerenter", handlePointerMove);
     window.removeEventListener("pointerdown", handlePointerMove);
     document.removeEventListener("mouseleave", handleMouseLeave);
+    window.removeEventListener("blur", handleReset);
+    window.removeEventListener("focus", handleReset);
     Matter.Events.off(engine, "beforeUpdate", onBeforeUpdate);
     activeGusts.clear();
   };

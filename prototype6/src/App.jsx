@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import Matter from "matter-js";
+import { attach } from "tauri-plugin-wallpaper";
 import chimeAudioUrl from "./assets/chime.mp3";
 import ballBImg from "./assets/ballB.png";
 import ballAImg from "./assets/ballA.png";
@@ -11,19 +12,70 @@ function App() {
   const sceneRef = useRef(null);
   const audioCtxRef = useRef(null);
   const audioBufferRef = useRef(null);
+  const audioPoolRef = useRef([]);
 
   useEffect(() => {
-    // Initialize Web Audio API for fast, overlapping chime sounds
+    // Native WorkerW parenting & subclassing handled by Rust backend
+  }, []);
+
+  useEffect(() => {
+    // Pre-create HTML5 audio elements pool for zero-latency audio fallback
+    audioPoolRef.current = [0.85, 0.95, 1.0, 1.1, 1.22].map((pitch) => {
+      const a = new Audio(chimeAudioUrl);
+      a.volume = 0.7;
+      a.playbackRate = pitch;
+      if ("preservesPitch" in a) {
+        a.preservesPitch = false;
+      }
+      return a;
+    });
+
     const initAudio = async () => {
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        const ctx = new AudioCtx();
+        const ctx = new AudioCtx({ latencyHint: "interactive" });
         audioCtxRef.current = ctx;
 
-        const response = await fetch(chimeAudioUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const decodedData = await ctx.decodeAudioData(arrayBuffer);
-        audioBufferRef.current = decodedData;
+        const unlock = () => {
+          if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+            audioCtxRef.current.resume().catch(() => {});
+          }
+          audioPoolRef.current.forEach((a) => {
+            a.play()
+              .then(() => {
+                a.pause();
+                a.currentTime = 0;
+              })
+              .catch(() => {});
+          });
+        };
+
+        window.addEventListener("pointerdown", unlock, { passive: true });
+        window.addEventListener("mousedown", unlock, { passive: true });
+        window.addEventListener("mousemove", unlock, { passive: true });
+        window.addEventListener("keydown", unlock, { passive: true });
+        window.addEventListener("touchstart", unlock, { passive: true });
+
+        // Force initial unlock attempt
+        unlock();
+
+        try {
+          const res = await fetch(chimeAudioUrl);
+          if (res.ok) {
+            const buf = await res.arrayBuffer();
+            ctx.decodeAudioData(
+              buf,
+              (decoded) => {
+                audioBufferRef.current = decoded;
+              },
+              (err) => {
+                console.warn("Decode audio error:", err);
+              }
+            );
+          }
+        } catch (e) {
+          console.warn("Fetch audio error:", e);
+        }
       } catch (e) {
         console.warn("Audio Context init error:", e);
       }
@@ -38,26 +90,83 @@ function App() {
   };
 
   const playChimeSound = (chimeIndex = 2) => {
-    resumeAudio();
+    // Tier 1: Web Audio API decoded buffer playback
+    const ctx = audioCtxRef.current;
+    if (ctx) {
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
 
-    if (audioCtxRef.current && audioBufferRef.current) {
-      const source = audioCtxRef.current.createBufferSource();
-      source.buffer = audioBufferRef.current;
+      if (audioBufferRef.current) {
+        try {
+          const now = ctx.currentTime;
+          const source = ctx.createBufferSource();
+          source.buffer = audioBufferRef.current;
 
-      // Unique pitch for each chime tube (B: 0.85, C: 0.95, D: 1.0, E: 1.1, F: 1.22)
-      const pitches = [0.85, 0.95, 1.0, 1.1, 1.22];
-      source.playbackRate.value = pitches[chimeIndex] || 1.0;
+          const pitches = [0.85, 0.95, 1.0, 1.1, 1.22];
+          source.playbackRate.value = pitches[chimeIndex] || 1.0;
 
-      const gainNode = audioCtxRef.current.createGain();
-      gainNode.gain.value = 0.7;
+          const gainNode = ctx.createGain();
+          gainNode.gain.setValueAtTime(0.7, now);
 
-      source.connect(gainNode);
-      gainNode.connect(audioCtxRef.current.destination);
-      source.start(0);
-    } else {
-      const audio = new Audio(chimeAudioUrl);
-      audio.volume = 0.7;
-      audio.play().catch(() => {});
+          source.connect(gainNode);
+          gainNode.connect(ctx.destination);
+          source.start(now);
+          return;
+        } catch (e) {
+          console.warn("Buffer play error:", e);
+        }
+      }
+    }
+
+    // Tier 2: HTML5 Audio Pool fallback
+    try {
+      const poolAudio = audioPoolRef.current[chimeIndex] || audioPoolRef.current[2];
+      if (poolAudio) {
+        poolAudio.currentTime = 0;
+        const playPromise = poolAudio.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              return;
+            })
+            .catch(() => {
+              // Create single-shot fallback element
+              const singleAudio = new Audio(chimeAudioUrl);
+              singleAudio.volume = 0.7;
+              singleAudio.playbackRate = [0.85, 0.95, 1.0, 1.1, 1.22][chimeIndex] || 1.0;
+              singleAudio.play().catch(() => {});
+            });
+        }
+      }
+    } catch (e) {
+      console.warn("HTML5 audio pool error:", e);
+    }
+
+    // Tier 3: Synthesized Metallic Chime Fallback
+    if (ctx) {
+      try {
+        const now = ctx.currentTime;
+        const freqs = [523.25, 587.33, 659.25, 783.99, 880.00];
+        const freq = freqs[chimeIndex] || 659.25;
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, now);
+
+        gain.gain.setValueAtTime(0.6, now);
+        gain.gain.linearRampToValueAtTime(0.0001, now + 1.2);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 1.2);
+      } catch (e) {
+        console.warn("Synth play error:", e);
+      }
     }
   };
 
@@ -308,22 +417,31 @@ function App() {
 
     Matter.Events.on(render, "afterRender", onRenderAluminumChimes);
 
-    // 7. Collision detection for playing chime audio on chime-to-chime impacts
+    // 7. Collision detection for playing chime audio on any chime impact
     const lastPlayedMap = new Map();
 
     const handleCollisionStart = (event) => {
       const now = Date.now();
       event.pairs.forEach((pair) => {
         const { bodyA, bodyB } = pair;
-        const isChimeA = bodyA.label === "chime";
-        const isChimeB = bodyB.label === "chime";
+        let chimeBody = null;
+        let otherBody = null;
 
-        if (isChimeA && isChimeB) {
-          const idx = bodyA.chimeIndex ?? bodyB.chimeIndex ?? 2;
+        if (bodyA.label === "chime") {
+          chimeBody = bodyA;
+          otherBody = bodyB;
+        } else if (bodyB.label === "chime") {
+          chimeBody = bodyB;
+          otherBody = bodyA;
+        }
 
-          const lastTime = lastPlayedMap.get(bodyA.id) || 0;
+        if (chimeBody && otherBody) {
+          const idx = chimeBody.chimeIndex ?? 2;
+          const pairKey = `chime-${chimeBody.id}-${otherBody.id}`;
+
+          const lastTime = lastPlayedMap.get(pairKey) || 0;
           if (now - lastTime > 60) {
-            lastPlayedMap.set(bodyA.id, now);
+            lastPlayedMap.set(pairKey, now);
             playChimeSound(idx);
           }
         }
@@ -332,15 +450,33 @@ function App() {
 
     Matter.Events.on(engine, "collisionStart", handleCollisionStart);
 
-    // 8. Initialize Wind Field Cursor Controller
+    // 8. Clamp maximum body speeds to guarantee physical stability during touchpad gestures
+    const dynamicBodies = [ballA, rectangleA, ...chimeRectangles];
+    const clampBodySpeeds = () => {
+      dynamicBodies.forEach((body) => {
+        const maxSpeed = 10;
+        if (body.speed > maxSpeed) {
+          Matter.Body.setVelocity(body, {
+            x: (body.velocity.x / body.speed) * maxSpeed,
+            y: (body.velocity.y / body.speed) * maxSpeed
+          });
+        }
+        if (Math.abs(body.angularVelocity) > 0.2) {
+          Matter.Body.setAngularVelocity(body, Math.sign(body.angularVelocity) * 0.2);
+        }
+      });
+    };
+    Matter.Events.on(engine, "beforeUpdate", clampBodySpeeds);
+
+    // 9. Initialize Wind Field Cursor Controller
     const cleanupWindCursor = initWindCursor({
       engine,
       render,
-      windBodies: [ballA, rectangleA, ...chimeRectangles],
+      windBodies: dynamicBodies,
       onUnlockAudio: resumeAudio
     });
 
-    // 9. Add all bodies and constraints to world
+    // 10. Add all bodies and constraints to world
     Matter.Composite.add(engine.world, [
       ballB,
       ballA,
@@ -352,14 +488,18 @@ function App() {
       ...chimeConstraints
     ]);
 
-    // 10. Run renderer and runner
+    // 11. Run renderer and runner with fixed 60 FPS timestep
     Matter.Render.run(render);
-    const runner = Matter.Runner.create();
+    const runner = Matter.Runner.create({
+      isFixed: true,
+      delta: 1000 / 60
+    });
     Matter.Runner.run(runner, engine);
 
     // Clean up on unmount
     return () => {
       cleanupWindCursor();
+      Matter.Events.off(engine, "beforeUpdate", clampBodySpeeds);
       Matter.Events.off(engine, "collisionStart", handleCollisionStart);
       Matter.Events.off(render, "afterRender", onRenderAluminumChimes);
       Matter.Render.stop(render);
