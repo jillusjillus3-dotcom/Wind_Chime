@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import Matter from "matter-js";
 import { attach } from "tauri-plugin-wallpaper";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import chimeAudioUrl from "./assets/chime.mp3";
 import ballBImg from "./assets/ballB.png";
 import ballAImg from "./assets/ballA.png";
@@ -13,6 +15,25 @@ function App() {
   const audioCtxRef = useRef(null);
   const audioBufferRef = useRef(null);
   const audioPoolRef = useRef([]);
+  const isMutedRef = useRef(false);
+
+  useEffect(() => {
+    // Fetch initial audio mute state from backend
+    invoke("is_audio_muted")
+      .then((muted) => {
+        isMutedRef.current = Boolean(muted);
+      })
+      .catch((err) => console.error("Error fetching audio mute state:", err));
+
+    // Listen for audio mute state changes emitted from system tray
+    const unlistenPromise = listen("audio-mute-changed", (event) => {
+      isMutedRef.current = Boolean(event.payload);
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   useEffect(() => {
     // Native WorkerW parenting & subclassing handled by Rust backend
@@ -90,6 +111,8 @@ function App() {
   };
 
   const playChimeSound = (chimeIndex = 2) => {
+    if (isMutedRef.current) return;
+
     // Tier 1: Web Audio API decoded buffer playback
     const ctx = audioCtxRef.current;
     if (ctx) {

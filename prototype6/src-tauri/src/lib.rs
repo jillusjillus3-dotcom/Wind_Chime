@@ -9,6 +9,7 @@ use tauri::{
 
 static ALLOW_HIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static IS_POSITION_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static IS_AUDIO_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn hide_window(window: &WebviewWindow) {
     ALLOW_HIDE.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -27,6 +28,8 @@ pub struct WindowSettings {
     pub y: i32,
     #[serde(default)]
     pub locked: bool,
+    #[serde(default)]
+    pub muted: bool,
 }
 
 fn get_settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -43,8 +46,9 @@ fn save_position_to_disk(app: &AppHandle, x: i32, y: i32) {
         return;
     }
     let locked = IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed);
+    let muted = IS_AUDIO_MUTED.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(path) = get_settings_path(app) {
-        let settings = WindowSettings { x, y, locked };
+        let settings = WindowSettings { x, y, locked, muted };
         if let Ok(json) = serde_json::to_string_pretty(&settings) {
             let _ = fs::write(path, json);
         }
@@ -57,6 +61,7 @@ fn load_position_from_disk(app: &AppHandle) -> Option<(i32, i32)> {
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(settings) = serde_json::from_str::<WindowSettings>(&content) {
                 IS_POSITION_LOCKED.store(settings.locked, std::sync::atomic::Ordering::SeqCst);
+                IS_AUDIO_MUTED.store(settings.muted, std::sync::atomic::Ordering::SeqCst);
                 // Ignore minimized or off-screen coordinates (-32000 on Windows)
                 if settings.x > -10000 && settings.y > -10000 {
                     return Some((settings.x, settings.y));
@@ -272,10 +277,29 @@ fn toggle_position_lock(app: AppHandle) -> Result<bool, String> {
     let new_state = !current;
     IS_POSITION_LOCKED.store(new_state, std::sync::atomic::Ordering::SeqCst);
     if let Some(w) = app.get_webview_window("main") {
-    let _ = w.emit("position-lock-changed", new_state);
-}
+        let _ = w.emit("position-lock-changed", new_state);
+    }
 
     if let Some(w) = app.get_webview_window("main") {
+        if let Ok(pos) = get_window_position(w) {
+            save_position_to_disk(&app, pos.0, pos.1);
+        }
+    }
+    Ok(new_state)
+}
+
+#[tauri::command]
+fn is_audio_muted() -> bool {
+    IS_AUDIO_MUTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn toggle_audio_mute(app: AppHandle) -> Result<bool, String> {
+    let current = IS_AUDIO_MUTED.load(std::sync::atomic::Ordering::SeqCst);
+    let new_state = !current;
+    IS_AUDIO_MUTED.store(new_state, std::sync::atomic::Ordering::SeqCst);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.emit("audio-mute-changed", new_state);
         if let Ok(pos) = get_window_position(w) {
             save_position_to_disk(&app, pos.0, pos.1);
         }
@@ -504,15 +528,24 @@ pub fn run() {
                 "Lock Position"
             };
             let lock_item = MenuItem::with_id(app, "lock", initial_lock_text, true, None::<&str>)?;
+
+            let initial_mute_text = if IS_AUDIO_MUTED.load(std::sync::atomic::Ordering::Relaxed) {
+                "Unmute Sound"
+            } else {
+                "Mute Sound"
+            };
+            let mute_item = MenuItem::with_id(app, "mute", initial_mute_text, true, None::<&str>)?;
+
             let uninstall_item = MenuItem::with_id(app, "uninstall", "Uninstall", true, None::<&str>)?;
             let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
 
             let tray_menu = Menu::with_items(
                 app,
-                &[&show_item, &hide_item, &lock_item, &uninstall_item, &exit_item],
+                &[&show_item, &hide_item, &lock_item, &mute_item, &uninstall_item, &exit_item],
             )?;
 
             let lock_item_clone = lock_item.clone();
+            let mute_item_clone = mute_item.clone();
 
             let tray_icon = app
                 .default_window_icon()
@@ -553,6 +586,25 @@ pub fn run() {
 
                         if let Some(w) = app.get_webview_window("main") {
                             if let Ok(pos) = get_window_position(w) {
+                                save_position_to_disk(app, pos.0, pos.1);
+                            }
+                        }
+                    }
+                    "mute" => {
+                        let current = IS_AUDIO_MUTED.load(std::sync::atomic::Ordering::SeqCst);
+                        let new_state = !current;
+                        IS_AUDIO_MUTED.store(new_state, std::sync::atomic::Ordering::SeqCst);
+
+                        let new_text = if new_state {
+                            "Unmute Sound"
+                        } else {
+                            "Mute Sound"
+                        };
+                        let _ = mute_item_clone.set_text(new_text);
+
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.emit("audio-mute-changed", new_state);
+                            if let Ok(pos) = get_window_position(window.clone()) {
                                 save_position_to_disk(app, pos.0, pos.1);
                             }
                         }
@@ -710,7 +762,9 @@ pub fn run() {
             get_window_position,
             move_window,
             is_position_locked,
-            toggle_position_lock
+            toggle_position_lock,
+            is_audio_muted,
+            toggle_audio_mute
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
