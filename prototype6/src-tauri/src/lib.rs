@@ -6,6 +6,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, Position, WebviewWindow,
 };
+use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::ManagerExt;
 
 static ALLOW_HIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static IS_POSITION_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -514,13 +516,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_wallpaper::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::AppleScript,
+            Some(vec!["--autostart"]),
+        ))
         .setup(|app| {
+            // Automatically enable autostart on Windows boot
+            let _ = app.autolaunch().enable();
+
             // Load saved lock state before creating the tray menu so initial tray text is correct in production
             let _ = load_position_from_disk(app.handle());
 
             // Build System Tray Menu & Icon
-            let hide_item = MenuItem::with_id(app, "hide", "Hide Widget", true, None::<&str>)?;
-
             let initial_lock_text = if IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
                 "Unlock Position"
             } else {
@@ -539,7 +546,7 @@ pub fn run() {
 
             let tray_menu = Menu::with_items(
                 app,
-                &[&hide_item, &lock_item, &mute_item, &uninstall_item],
+                &[&lock_item, &mute_item, &uninstall_item],
             )?;
 
             let lock_item_clone = lock_item.clone();
@@ -556,11 +563,6 @@ pub fn run() {
                 .icon(tray_icon)
                 .menu(&tray_menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "hide" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            hide_window(&w);
-                        }
-                    }
                     "lock" => {
                         let current = IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::SeqCst);
                         let new_state = !current;

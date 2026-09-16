@@ -11,6 +11,9 @@
   Delete "$DESKTOP\${MAINBINARYNAME}.lnk"
   Delete "$COMMONDESKTOP\${PRODUCTNAME}.lnk"
   Delete "$COMMONDESKTOP\${MAINBINARYNAME}.lnk"
+
+  ; Register application to launch automatically on Windows boot
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" "$INSTDIR\${MAINBINARYNAME}.exe"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
@@ -22,4 +25,7 @@
   Delete "$DESKTOP\${MAINBINARYNAME}.lnk"
   Delete "$COMMONDESKTOP\${PRODUCTNAME}.lnk"
   Delete "$COMMONDESKTOP\${MAINBINARYNAME}.lnk"
+
+  ; Remove auto-start registry key upon uninstallation
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
 !macroend
