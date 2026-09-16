@@ -504,9 +504,13 @@ pub fn run() {
                 "Lock Position"
             };
             let lock_item = MenuItem::with_id(app, "lock", initial_lock_text, true, None::<&str>)?;
+            let uninstall_item = MenuItem::with_id(app, "uninstall", "Uninstall", true, None::<&str>)?;
             let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
 
-            let tray_menu = Menu::with_items(app, &[&show_item, &hide_item, &lock_item, &exit_item])?;
+            let tray_menu = Menu::with_items(
+                app,
+                &[&show_item, &hide_item, &lock_item, &uninstall_item, &exit_item],
+            )?;
 
             let lock_item_clone = lock_item.clone();
 
@@ -552,6 +556,37 @@ pub fn run() {
                                 save_position_to_disk(app, pos.0, pos.1);
                             }
                         }
+                    }
+                    "uninstall" => {
+                        #[cfg(target_os = "windows")]
+                        {
+                            if let Ok(current_exe) = std::env::current_exe() {
+                                if let Some(exe_dir) = current_exe.parent() {
+                                    let candidates = [
+                                        exe_dir.join("Uninstall prototype6.exe"),
+                                        exe_dir.join("uninstall.exe"),
+                                        exe_dir.join("uninst.exe"),
+                                    ];
+
+                                    let mut launched = false;
+                                    for uninstaller in &candidates {
+                                        if uninstaller.exists() {
+                                            if std::process::Command::new(uninstaller).spawn().is_ok() {
+                                                launched = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    if !launched {
+                                        let _ = std::process::Command::new("cmd")
+                                            .args(["/C", "start", "ms-settings:appsfeatures"])
+                                            .spawn();
+                                    }
+                                }
+                            }
+                        }
+                        app.exit(0);
                     }
                     "exit" => {
                         app.exit(0);
