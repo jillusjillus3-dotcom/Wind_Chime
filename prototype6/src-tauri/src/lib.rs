@@ -271,7 +271,9 @@ fn toggle_position_lock(app: AppHandle) -> Result<bool, String> {
     let current = IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::SeqCst);
     let new_state = !current;
     IS_POSITION_LOCKED.store(new_state, std::sync::atomic::Ordering::SeqCst);
-    let _ = app.emit("position-lock-changed", new_state);
+    if let Some(w) = app.get_webview_window("main") {
+    let _ = w.emit("position-lock-changed", new_state);
+}
 
     if let Some(w) = app.get_webview_window("main") {
         if let Ok(pos) = get_window_position(w) {
@@ -489,6 +491,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_wallpaper::init())
         .setup(|app| {
+            // Load saved lock state before creating the tray menu so initial tray text is correct in production
+            let _ = load_position_from_disk(app.handle());
+
             // Build System Tray Menu & Icon
             let show_item = MenuItem::with_id(app, "show", "Show Widget", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, "hide", "Hide Widget", true, None::<&str>)?;
@@ -537,7 +542,10 @@ pub fn run() {
                             "Lock Position"
                         };
                         let _ = lock_item_clone.set_text(new_text);
-                        let _ = app.emit("position-lock-changed", new_state);
+
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.emit("position-lock-changed", new_state);
+                        }
 
                         if let Some(w) = app.get_webview_window("main") {
                             if let Ok(pos) = get_window_position(w) {
