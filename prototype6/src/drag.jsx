@@ -1,5 +1,6 @@
-import { useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 /**
  * WidgetDragHandle Component
@@ -10,8 +11,26 @@ import { invoke } from "@tauri-apps/api/core";
  */
 export function WidgetDragHandle() {
   const isDraggingRef = useRef(false);
+  const [isLocked, setIsLocked] = useState(false);
+
+  useEffect(() => {
+    // Fetch initial lock state from backend
+    invoke("is_position_locked")
+      .then((locked) => setIsLocked(Boolean(locked)))
+      .catch((err) => console.error("[Drag Handle] Error fetching lock state:", err));
+
+    // Listen for lock state changes emitted from tray menu or backend
+    const unlistenPromise = listen("position-lock-changed", (event) => {
+      setIsLocked(Boolean(event.payload));
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   const handlePointerDown = async (e) => {
+    if (isLocked) return;
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
@@ -86,12 +105,12 @@ export function WidgetDragHandle() {
         background: "transparent",
         backgroundColor: "transparent",
         zIndex: 999999,
-        cursor: "grab",
+        cursor: isLocked ? "default" : "grab",
         userSelect: "none",
-        pointerEvents: "auto"
+        pointerEvents: isLocked ? "none" : "auto"
       }}
-      className="active:cursor-grabbing"
-      title="Click & Drag top ball (ballB) to move Wind Chime widget"
+      className={isLocked ? "" : "active:cursor-grabbing"}
+      title={isLocked ? "Position Locked" : "Click & Drag top ball (ballB) to move Wind Chime widget"}
     />
   );
 }

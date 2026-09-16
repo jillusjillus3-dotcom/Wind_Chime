@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, PhysicalPosition, Position, WebviewWindow,
+    AppHandle, Emitter, Manager, PhysicalPosition, Position, WebviewWindow,
 };
 
 static ALLOW_HIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static IS_POSITION_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn hide_window(window: &WebviewWindow) {
     ALLOW_HIDE.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -24,6 +25,8 @@ fn show_window(window: &WebviewWindow) {
 pub struct WindowSettings {
     pub x: i32,
     pub y: i32,
+    #[serde(default)]
+    pub locked: bool,
 }
 
 fn get_settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -39,8 +42,9 @@ fn save_position_to_disk(app: &AppHandle, x: i32, y: i32) {
     if x <= -10000 || y <= -10000 {
         return;
     }
+    let locked = IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(path) = get_settings_path(app) {
-        let settings = WindowSettings { x, y };
+        let settings = WindowSettings { x, y, locked };
         if let Ok(json) = serde_json::to_string_pretty(&settings) {
             let _ = fs::write(path, json);
         }
@@ -52,6 +56,7 @@ fn load_position_from_disk(app: &AppHandle) -> Option<(i32, i32)> {
     if path.exists() {
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(settings) = serde_json::from_str::<WindowSettings>(&content) {
+                IS_POSITION_LOCKED.store(settings.locked, std::sync::atomic::Ordering::SeqCst);
                 // Ignore minimized or off-screen coordinates (-32000 on Windows)
                 if settings.x > -10000 && settings.y > -10000 {
                     return Some((settings.x, settings.y));
@@ -95,6 +100,10 @@ fn get_work_area_bounds(
 
 #[tauri::command]
 fn snap_and_save_position(window: WebviewWindow) -> Result<(i32, i32), String> {
+    if IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok((100, 100));
+    }
+
     let mut x = 100;
     let mut y = 100;
 
@@ -169,6 +178,9 @@ fn snap_and_save_position(window: WebviewWindow) -> Result<(i32, i32), String> {
 
 #[tauri::command]
 fn start_drag(window: WebviewWindow) -> Result<(), String> {
+    if IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
     window.start_dragging().map_err(|e| e.to_string())
 }
 
@@ -195,6 +207,10 @@ fn get_window_position(window: WebviewWindow) -> Result<(i32, i32), String> {
 
 #[tauri::command]
 fn move_window(window: WebviewWindow, mut x: i32, mut y: i32) -> Result<(), String> {
+    if IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+
     let window_width: i32 = 340;
     let window_height: i32 = 400;
     let border: i32 = 5;
@@ -243,6 +259,26 @@ fn move_window(window: WebviewWindow, mut x: i32, mut y: i32) -> Result<(), Stri
     window
         .set_position(Position::Physical(PhysicalPosition::new(x, y)))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_position_locked() -> bool {
+    IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn toggle_position_lock(app: AppHandle) -> Result<bool, String> {
+    let current = IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::SeqCst);
+    let new_state = !current;
+    IS_POSITION_LOCKED.store(new_state, std::sync::atomic::Ordering::SeqCst);
+    let _ = app.emit("position-lock-changed", new_state);
+
+    if let Some(w) = app.get_webview_window("main") {
+        if let Ok(pos) = get_window_position(w) {
+            save_position_to_disk(&app, pos.0, pos.1);
+        }
+    }
+    Ok(new_state)
 }
 
 #[cfg(target_os = "windows")]
@@ -456,9 +492,18 @@ pub fn run() {
             // Build System Tray Menu & Icon
             let show_item = MenuItem::with_id(app, "show", "Show Widget", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, "hide", "Hide Widget", true, None::<&str>)?;
+
+            let initial_lock_text = if IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+                "Unlock Position"
+            } else {
+                "Lock Position"
+            };
+            let lock_item = MenuItem::with_id(app, "lock", initial_lock_text, true, None::<&str>)?;
             let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
 
-            let tray_menu = Menu::with_items(app, &[&show_item, &hide_item, &exit_item])?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &hide_item, &lock_item, &exit_item])?;
+
+            let lock_item_clone = lock_item.clone();
 
             let tray_icon = app
                 .default_window_icon()
@@ -470,7 +515,7 @@ pub fn run() {
             TrayIconBuilder::new()
                 .icon(tray_icon)
                 .menu(&tray_menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
                             show_window(&w);
@@ -479,6 +524,25 @@ pub fn run() {
                     "hide" => {
                         if let Some(w) = app.get_webview_window("main") {
                             hide_window(&w);
+                        }
+                    }
+                    "lock" => {
+                        let current = IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::SeqCst);
+                        let new_state = !current;
+                        IS_POSITION_LOCKED.store(new_state, std::sync::atomic::Ordering::SeqCst);
+
+                        let new_text = if new_state {
+                            "Unlock Position"
+                        } else {
+                            "Lock Position"
+                        };
+                        let _ = lock_item_clone.set_text(new_text);
+                        let _ = app.emit("position-lock-changed", new_state);
+
+                        if let Some(w) = app.get_webview_window("main") {
+                            if let Ok(pos) = get_window_position(w) {
+                                save_position_to_disk(app, pos.0, pos.1);
+                            }
                         }
                     }
                     "exit" => {
@@ -601,7 +665,9 @@ pub fn run() {
             snap_and_save_position,
             start_drag,
             get_window_position,
-            move_window
+            move_window,
+            is_position_locked,
+            toggle_position_lock
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
