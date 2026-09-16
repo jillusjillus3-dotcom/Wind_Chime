@@ -519,7 +519,6 @@ pub fn run() {
             let _ = load_position_from_disk(app.handle());
 
             // Build System Tray Menu & Icon
-            let show_item = MenuItem::with_id(app, "show", "Show Widget", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, "hide", "Hide Widget", true, None::<&str>)?;
 
             let initial_lock_text = if IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -537,11 +536,10 @@ pub fn run() {
             let mute_item = MenuItem::with_id(app, "mute", initial_mute_text, true, None::<&str>)?;
 
             let uninstall_item = MenuItem::with_id(app, "uninstall", "Uninstall", true, None::<&str>)?;
-            let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
 
             let tray_menu = Menu::with_items(
                 app,
-                &[&show_item, &hide_item, &lock_item, &mute_item, &uninstall_item, &exit_item],
+                &[&hide_item, &lock_item, &mute_item, &uninstall_item],
             )?;
 
             let lock_item_clone = lock_item.clone();
@@ -558,11 +556,6 @@ pub fn run() {
                 .icon(tray_icon)
                 .menu(&tray_menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            show_window(&w);
-                        }
-                    }
                     "hide" => {
                         if let Some(w) = app.get_webview_window("main") {
                             hide_window(&w);
@@ -638,9 +631,6 @@ pub fn run() {
                                 }
                             }
                         }
-                        app.exit(0);
-                    }
-                    "exit" => {
                         app.exit(0);
                     }
                     _ => {}
