@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "prototype7",
+  "version": "0.1.0",
+  "identifier": "com.jillu.prototype7",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "prototype7 Desktop Window",
+        "width": 340,
+        "height": 400,
+        "x": 100,
+        "y": 100,
+        "visible": true,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "alwaysOnTop": false,
+        "alwaysOnBottom": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "additionalBrowserArgs": "--autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+  "active": true,
+  "targets": "nsis",
+  "windows": {
+    "nsis": {
+      "installerHooks": "windows/installer.nsi"
+    }
+  }
+}
+}
