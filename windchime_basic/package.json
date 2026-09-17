@@ -1,72 +1,27 @@
 {
-  "name": "windchime_basic",
+  "name": "qi-bell",
   "private": true,
-  "version": "1.0.0",
-  "description": "Windows desktop Wind Chime widget built with Electron, React, Vite and Matter.js",
+  "version": "0.1.0",
   "type": "module",
-  "main": "main.cjs",
-  "author": "Jillus",
-  "license": "MIT",
-
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "vite:dev": "vite",
-    "electron:dev": "electron .",
-    "start": "vite build && electron .",
+    "dev": "vite",
     "build": "vite build",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri"
   },
-
   "dependencies": {
-    "@tailwindcss/vite": "^4.3.3",
-    "koffi": "^3.2.1",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
     "matter-js": "^0.20.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "tailwindcss": "^4.3.3"
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tauri-plugin-wallpaper": "^4.0.0"
   },
-
   "devDependencies": {
-    "@eslint/js": "^9.36.0",
-    "@types/react": "^19.2.2",
-    "@types/react-dom": "^19.2.2",
-    "@vitejs/plugin-react": "^5.1.0",
-    "concurrently": "^9.2.1",
-    "electron": "^38.1.2",
-    "electron-builder": "^26.0.12",
-    "eslint": "^9.36.0",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.22",
-    "globals": "^16.4.0",
-    "vite": "^7.1.7",
-    "wait-on": "^8.0.5"
-  },
-
-  "build": {
-    "appId": "com.jillus.windchime",
-    "productName": "Wind Chime",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "dist/**/*",
-      "main.cjs",
-      "preload.js",
-      "package.json",
-      "assets/**/*"
-    ],
-    "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    }
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-react": "^6.0.2",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.0.16"
   }
 }
