@@ -110,10 +110,16 @@ function App() {
     }
   };
 
-  const playChimeSound = (chimeIndex = 2) => {
+  const playChimeSound = (chimeIndex = 2, intensity = 0.7, panX = 0) => {
     if (isMutedRef.current) return;
 
-    // Tier 1: Web Audio API decoded buffer playback
+    // Soothing Zen Pentatonic Musical Tuning Ratios (C4, D4, E4, G4, A4)
+    const pitches = [0.841, 0.944, 1.0, 1.189, 1.335];
+    const targetPitch = pitches[chimeIndex] || 1.0;
+    const clampedIntensity = Math.min(Math.max(intensity, 0.2), 1.0);
+    const volumeGain = 0.15 + clampedIntensity * 0.45;
+
+    // Tier 1: High-Fidelity Web Audio API with Lowpass Filter, Exponential Envelope & Stereo Panning
     const ctx = audioCtxRef.current;
     if (ctx) {
       if (ctx.state === "suspended") {
@@ -125,15 +131,36 @@ function App() {
           const now = ctx.currentTime;
           const source = ctx.createBufferSource();
           source.buffer = audioBufferRef.current;
+          source.playbackRate.value = targetPitch;
 
-          const pitches = [0.85, 0.95, 1.0, 1.1, 1.22];
-          source.playbackRate.value = pitches[chimeIndex] || 1.0;
+          // Warm Acoustic Lowpass Filter (cuts harsh digital high frequencies for soothing tone)
+          const filter = ctx.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.frequency.setValueAtTime(2600 + chimeIndex * 250, now);
+          filter.Q.setValueAtTime(0.7, now);
 
+          // Smooth Gain Envelope (Gentle 12ms attack & smooth exponential decay)
           const gainNode = ctx.createGain();
-          gainNode.gain.setValueAtTime(0.7, now);
+          gainNode.gain.setValueAtTime(0.001, now);
+          gainNode.gain.exponentialRampToValueAtTime(volumeGain, now + 0.012);
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 2.2);
 
-          source.connect(gainNode);
-          gainNode.connect(ctx.destination);
+          // Spatial Stereo Panner (-0.4 left chimes to +0.4 right chimes)
+          let panner = null;
+          if (typeof ctx.createStereoPanner === "function") {
+            panner = ctx.createStereoPanner();
+            panner.pan.setValueAtTime(Math.min(Math.max(panX * 0.5, -0.7), 0.7), now);
+          }
+
+          source.connect(filter);
+          filter.connect(gainNode);
+          if (panner) {
+            gainNode.connect(panner);
+            panner.connect(ctx.destination);
+          } else {
+            gainNode.connect(ctx.destination);
+          }
+
           source.start(now);
           return;
         } catch (e) {
@@ -142,51 +169,71 @@ function App() {
       }
     }
 
-    // Tier 2: HTML5 Audio Pool fallback
+    // Tier 2: HTML5 Audio Pool Fallback
     try {
       const poolAudio = audioPoolRef.current[chimeIndex] || audioPoolRef.current[2];
       if (poolAudio) {
         poolAudio.currentTime = 0;
+        poolAudio.volume = Math.min(volumeGain, 1.0);
         const playPromise = poolAudio.play();
         if (playPromise !== undefined) {
-          playPromise
-            .then(() => {
-              return;
-            })
-            .catch(() => {
-              // Create single-shot fallback element
-              const singleAudio = new Audio(chimeAudioUrl);
-              singleAudio.volume = 0.7;
-              singleAudio.playbackRate = [0.85, 0.95, 1.0, 1.1, 1.22][chimeIndex] || 1.0;
-              singleAudio.play().catch(() => {});
-            });
+          playPromise.catch(() => {
+            const singleAudio = new Audio(chimeAudioUrl);
+            singleAudio.volume = Math.min(volumeGain, 1.0);
+            singleAudio.playbackRate = targetPitch;
+            singleAudio.play().catch(() => {});
+          });
         }
+        return;
       }
     } catch (e) {
       console.warn("HTML5 audio pool error:", e);
     }
 
-    // Tier 3: Synthesized Metallic Chime Fallback
+    // Tier 3: Soothing Synthesized Metallic Bell / Acoustic Bar Tone
     if (ctx) {
       try {
         const now = ctx.currentTime;
-        const freqs = [523.25, 587.33, 659.25, 783.99, 880.00];
-        const freq = freqs[chimeIndex] || 659.25;
+        // Soothing Zen Pentatonic frequencies (C4, D4, E4, G4, A4)
+        const freqs = [261.63, 293.66, 329.63, 392.00, 440.00];
+        const fundamentalFreq = freqs[chimeIndex] || 329.63;
 
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
+        // Fundamental tone oscillator
+        const oscFundamental = ctx.createOscillator();
+        oscFundamental.type = "sine";
+        oscFundamental.frequency.setValueAtTime(fundamentalFreq, now);
 
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(freq, now);
+        // Acoustic overtone oscillator (2.76x fundamental frequency)
+        const oscOvertone = ctx.createOscillator();
+        oscOvertone.type = "triangle";
+        oscOvertone.frequency.setValueAtTime(fundamentalFreq * 2.76, now);
 
-        gain.gain.setValueAtTime(0.6, now);
-        gain.gain.linearRampToValueAtTime(0.0001, now + 1.2);
+        // Warm Lowpass Filter
+        const filter = ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(2000, now);
 
-        osc.connect(gain);
-        gain.connect(ctx.destination);
+        // Master Gain Envelope
+        const masterGain = ctx.createGain();
+        masterGain.gain.setValueAtTime(0.001, now);
+        masterGain.gain.exponentialRampToValueAtTime(volumeGain * 0.5, now + 0.008);
+        masterGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.4);
 
-        osc.start(now);
-        osc.stop(now + 1.2);
+        // Overtone Gain
+        const overtoneGain = ctx.createGain();
+        overtoneGain.gain.setValueAtTime(volumeGain * 0.15, now);
+        overtoneGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+
+        oscFundamental.connect(masterGain);
+        oscOvertone.connect(overtoneGain);
+        overtoneGain.connect(masterGain);
+        masterGain.connect(filter);
+        filter.connect(ctx.destination);
+
+        oscFundamental.start(now);
+        oscOvertone.start(now);
+        oscFundamental.stop(now + 1.4);
+        oscOvertone.stop(now + 0.35);
       } catch (e) {
         console.warn("Synth play error:", e);
       }
@@ -465,7 +512,20 @@ function App() {
           const lastTime = lastPlayedMap.get(pairKey) || 0;
           if (now - lastTime > 60) {
             lastPlayedMap.set(pairKey, now);
-            playChimeSound(idx);
+
+            // Compute relative impact velocity magnitude
+            const relVelX = (bodyA.velocity?.x || 0) - (bodyB.velocity?.x || 0);
+            const relVelY = (bodyA.velocity?.y || 0) - (bodyB.velocity?.y || 0);
+            const impactSpeed = Math.hypot(relVelX, relVelY);
+
+            // Dynamic intensity (0.2 for whisper-soft contact to 1.0 for strong impact)
+            const intensity = Math.min(Math.max(impactSpeed / 3.5, 0.2), 1.0);
+
+            // Normalized X position for stereo spatial panner (-1.0 left to +1.0 right)
+            const posX = chimeBody.position ? chimeBody.position.x : (width / 2);
+            const normalizedX = (posX - (width / 2)) / (width / 2);
+
+            playChimeSound(idx, intensity, normalizedX);
           }
         }
       });

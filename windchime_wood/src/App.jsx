@@ -1,29 +1,103 @@
 import { useEffect, useRef } from "react";
 import Matter from "matter-js";
+import { attach } from "tauri-plugin-wallpaper";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import woodAudioUrl from "./assets/wood.mp3";
 import ballBImg from "./assets/ballB.png";
 import ballAImg from "./assets/ballA.png";
 import rectangleAImg from "./assets/rectangleA.png";
 import rectangleImg from "./assets/rectangle.png";
-import { initWindCursor, setWindowDraggingState } from "./cursor.jsx";
+import { initWindCursor } from "./cursor.jsx";
+import WidgetDragHandle from "./drag.jsx";
 
 function App() {
   const sceneRef = useRef(null);
   const audioCtxRef = useRef(null);
   const audioBufferRef = useRef(null);
+  const audioPoolRef = useRef([]);
+  const isMutedRef = useRef(false);
 
   useEffect(() => {
-    // Initialize Web Audio API for fast, overlapping chime sounds
+    // Fetch initial audio mute state from backend
+    invoke("is_audio_muted")
+      .then((muted) => {
+        isMutedRef.current = Boolean(muted);
+      })
+      .catch((err) => console.error("Error fetching audio mute state:", err));
+
+    // Listen for audio mute state changes emitted from system tray
+    const unlistenPromise = listen("audio-mute-changed", (event) => {
+      isMutedRef.current = Boolean(event.payload);
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  useEffect(() => {
+    // Native WorkerW parenting & subclassing handled by Rust backend
+  }, []);
+
+  useEffect(() => {
+    // Pre-create HTML5 audio elements pool for zero-latency audio fallback
+    audioPoolRef.current = [0.85, 0.95, 1.0, 1.1, 1.22].map((pitch) => {
+      const a = new Audio(woodAudioUrl);
+      a.volume = 0.7;
+      a.playbackRate = pitch;
+      if ("preservesPitch" in a) {
+        a.preservesPitch = false;
+      }
+      return a;
+    });
+
     const initAudio = async () => {
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        const ctx = new AudioCtx();
+        const ctx = new AudioCtx({ latencyHint: "interactive" });
         audioCtxRef.current = ctx;
 
-        const response = await fetch(woodAudioUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const decodedData = await ctx.decodeAudioData(arrayBuffer);
-        audioBufferRef.current = decodedData;
+        const unlock = () => {
+          if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+            audioCtxRef.current.resume().catch(() => {});
+          }
+          audioPoolRef.current.forEach((a) => {
+            a.play()
+              .then(() => {
+                a.pause();
+                a.currentTime = 0;
+              })
+              .catch(() => {});
+          });
+        };
+
+        window.addEventListener("pointerdown", unlock, { passive: true });
+        window.addEventListener("mousedown", unlock, { passive: true });
+        window.addEventListener("mousemove", unlock, { passive: true });
+        window.addEventListener("keydown", unlock, { passive: true });
+        window.addEventListener("touchstart", unlock, { passive: true });
+
+        // Force initial unlock attempt
+        unlock();
+
+        try {
+          const res = await fetch(woodAudioUrl);
+          if (res.ok) {
+            const buf = await res.arrayBuffer();
+            ctx.decodeAudioData(
+              buf,
+              (decoded) => {
+                audioBufferRef.current = decoded;
+              },
+              (err) => {
+                console.warn("Decode audio error:", err);
+              }
+            );
+          }
+        } catch (e) {
+          console.warn("Fetch audio error:", e);
+        }
       } catch (e) {
         console.warn("Audio Context init error:", e);
       }
@@ -37,40 +111,133 @@ function App() {
     }
   };
 
-  const playChimeSound = (chimeIndex = 2) => {
-    resumeAudio();
+  const playChimeSound = (chimeIndex = 2, intensity = 0.7, panX = 0) => {
+    if (isMutedRef.current) return;
 
-    if (audioCtxRef.current && audioBufferRef.current) {
-      const source = audioCtxRef.current.createBufferSource();
-      source.buffer = audioBufferRef.current;
+    // Soothing Zen Pentatonic Musical Tuning Ratios (C4, D4, E4, G4, A4)
+    const pitches = [0.841, 0.944, 1.0, 1.189, 1.335];
+    const targetPitch = pitches[chimeIndex] || 1.0;
+    const clampedIntensity = Math.min(Math.max(intensity, 0.2), 1.0);
+    const volumeGain = 0.15 + clampedIntensity * 0.45;
 
-      // Unique pitch for each chime tube (B: 0.85, C: 0.95, D: 1.0, E: 1.1, F: 1.22)
-      const pitches = [0.85, 0.95, 1.0, 1.1, 1.22];
-      source.playbackRate.value = pitches[chimeIndex] || 1.0;
+    // Tier 1: High-Fidelity Web Audio API with Lowpass Filter, Exponential Envelope & Stereo Panning
+    const ctx = audioCtxRef.current;
+    if (ctx) {
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
 
-      // 1. Lowshelf filter to boost bass frequencies below 350 Hz (+8 dB)
-      const bassFilter = audioCtxRef.current.createBiquadFilter();
-      bassFilter.type = "lowshelf";
-      bassFilter.frequency.value = 350;
-      bassFilter.gain.value = 8;
+      if (audioBufferRef.current) {
+        try {
+          const now = ctx.currentTime;
+          const source = ctx.createBufferSource();
+          source.buffer = audioBufferRef.current;
+          source.playbackRate.value = targetPitch;
 
-      // 2. Lowpass filter to reduce treble and give a warm wooden sound
-      const trebleFilter = audioCtxRef.current.createBiquadFilter();
-      trebleFilter.type = "lowpass";
-      trebleFilter.frequency.value = 1800; // Cut off high treble frequencies above 1800 Hz
+          // Warm Acoustic Lowpass Filter (cuts harsh digital high frequencies for soothing tone)
+          const filter = ctx.createBiquadFilter();
+          filter.type = "lowpass";
+          filter.frequency.setValueAtTime(2400 + chimeIndex * 250, now);
+          filter.Q.setValueAtTime(0.7, now);
 
-      const gainNode = audioCtxRef.current.createGain();
-      gainNode.gain.value = 0.8;
+          // Smooth Gain Envelope (Gentle 12ms attack & smooth exponential decay)
+          const gainNode = ctx.createGain();
+          gainNode.gain.setValueAtTime(0.001, now);
+          gainNode.gain.exponentialRampToValueAtTime(volumeGain, now + 0.012);
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 2.2);
 
-      source.connect(bassFilter);
-      bassFilter.connect(trebleFilter);
-      trebleFilter.connect(gainNode);
-      gainNode.connect(audioCtxRef.current.destination);
-      source.start(0);
-    } else {
-      const audio = new Audio(woodAudioUrl);
-      audio.volume = 0.7;
-      audio.play().catch(() => {});
+          // Spatial Stereo Panner (-0.4 left chimes to +0.4 right chimes)
+          let panner = null;
+          if (typeof ctx.createStereoPanner === "function") {
+            panner = ctx.createStereoPanner();
+            panner.pan.setValueAtTime(Math.min(Math.max(panX * 0.5, -0.7), 0.7), now);
+          }
+
+          source.connect(filter);
+          filter.connect(gainNode);
+          if (panner) {
+            gainNode.connect(panner);
+            panner.connect(ctx.destination);
+          } else {
+            gainNode.connect(ctx.destination);
+          }
+
+          source.start(now);
+          return;
+        } catch (e) {
+          console.warn("Buffer play error:", e);
+        }
+      }
+    }
+
+    // Tier 2: HTML5 Audio Pool Fallback
+    try {
+      const poolAudio = audioPoolRef.current[chimeIndex] || audioPoolRef.current[2];
+      if (poolAudio) {
+        poolAudio.currentTime = 0;
+        poolAudio.volume = Math.min(volumeGain, 1.0);
+        const playPromise = poolAudio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(() => {
+            const singleAudio = new Audio(woodAudioUrl);
+            singleAudio.volume = Math.min(volumeGain, 1.0);
+            singleAudio.playbackRate = targetPitch;
+            singleAudio.play().catch(() => {});
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      console.warn("HTML5 audio pool error:", e);
+    }
+
+    // Tier 3: Soothing Synthesized Organic Wooden Bar Tone
+    if (ctx) {
+      try {
+        const now = ctx.currentTime;
+        // Soothing Zen Pentatonic frequencies (C4, D4, E4, G4, A4)
+        const freqs = [261.63, 293.66, 329.63, 392.00, 440.00];
+        const fundamentalFreq = freqs[chimeIndex] || 329.63;
+
+        // Fundamental tone oscillator
+        const oscFundamental = ctx.createOscillator();
+        oscFundamental.type = "sine";
+        oscFundamental.frequency.setValueAtTime(fundamentalFreq, now);
+
+        // Acoustic wood overtone oscillator (2.76x fundamental frequency)
+        const oscOvertone = ctx.createOscillator();
+        oscOvertone.type = "triangle";
+        oscOvertone.frequency.setValueAtTime(fundamentalFreq * 2.76, now);
+
+        // Warm Lowpass Filter
+        const filter = ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(1800, now);
+
+        // Master Gain Envelope
+        const masterGain = ctx.createGain();
+        masterGain.gain.setValueAtTime(0.001, now);
+        masterGain.gain.exponentialRampToValueAtTime(volumeGain * 0.5, now + 0.008);
+        masterGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.4);
+
+        // Overtone Gain (decays quickly for natural wood block resonance)
+        const overtoneGain = ctx.createGain();
+        overtoneGain.gain.setValueAtTime(volumeGain * 0.15, now);
+        overtoneGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+
+        oscFundamental.connect(masterGain);
+        oscOvertone.connect(overtoneGain);
+        overtoneGain.connect(masterGain);
+        masterGain.connect(filter);
+        filter.connect(ctx.destination);
+
+        oscFundamental.start(now);
+        oscOvertone.start(now);
+        oscFundamental.stop(now + 1.4);
+        oscOvertone.stop(now + 0.35);
+      } catch (e) {
+        console.warn("Synth play error:", e);
+      }
     }
   };
 
@@ -150,7 +317,7 @@ function App() {
       stiffness: 1, // Rigid constraint
       render: {
         visible: true,
-        strokeStyle: "#000000",
+        strokeStyle: "#000000", // Black constraint thread color
         lineWidth: 1.5,
         type: "line",
         anchors: false
@@ -198,8 +365,8 @@ function App() {
     const constraintLeft = Matter.Constraint.create({
       bodyA: ballA,
       bodyB: rectangleA,
-      pointA: { x: -ballAAttachX, y: ballAAttachY }, // Connected to bottom-left edge of ballA (unchanged)
-      pointB: { x: -rectAAttachX, y: -rectangleAHeight / 2 }, // Balanced inner anchor on top of rectangleA
+      pointA: { x: -ballAAttachX, y: ballAAttachY },
+      pointB: { x: -rectAAttachX, y: -rectangleAHeight / 2 },
       length: stringLength,
       stiffness: 1,
       render: {
@@ -214,8 +381,8 @@ function App() {
     const constraintRight = Matter.Constraint.create({
       bodyA: ballA,
       bodyB: rectangleA,
-      pointA: { x: ballAAttachX, y: ballAAttachY }, // Connected to bottom-right edge of ballA (unchanged)
-      pointB: { x: rectAAttachX, y: -rectangleAHeight / 2 }, // Balanced inner anchor on top of rectangleA
+      pointA: { x: ballAAttachX, y: ballAAttachY },
+      pointB: { x: rectAAttachX, y: -rectangleAHeight / 2 },
       length: stringLength,
       stiffness: 1,
       render: {
@@ -269,12 +436,11 @@ function App() {
       Matter.Body.setMass(chime, cfg.mass);
       chimeRectangles.push(chime);
 
-      // Constraint connecting rectangleA to the top of this chime
       const c = Matter.Constraint.create({
         bodyA: rectangleA,
         bodyB: chime,
         pointA: { x: cfg.offsetX, y: rectangleAHeight / 2 },
-        pointB: { x: 0, y: -cfg.height / 2 }, // Connected to top edge of rectangle
+        pointB: { x: 0, y: -cfg.height / 2 },
         length: cfg.constraintLength,
         stiffness: cfg.stiffness,
         damping: cfg.damping,
@@ -289,24 +455,47 @@ function App() {
       chimeConstraints.push(c);
     });
 
-    // 7. Collision detection for playing chime audio on chime-to-chime impacts
+
+
+    // 7. Collision detection for playing chime audio on any chime impact
     const lastPlayedMap = new Map();
 
     const handleCollisionStart = (event) => {
       const now = Date.now();
       event.pairs.forEach((pair) => {
         const { bodyA, bodyB } = pair;
-        const isChimeA = bodyA.label === "chime";
-        const isChimeB = bodyB.label === "chime";
+        let chimeBody = null;
+        let otherBody = null;
 
-        if (isChimeA && isChimeB) {
-          const idx = bodyA.chimeIndex ?? bodyB.chimeIndex ?? 2;
+        if (bodyA.label === "chime") {
+          chimeBody = bodyA;
+          otherBody = bodyB;
+        } else if (bodyB.label === "chime") {
+          chimeBody = bodyB;
+          otherBody = bodyA;
+        }
 
-          // Rate limit per body pair (60ms) to allow clear, distinct notes
-          const lastTime = lastPlayedMap.get(bodyA.id) || 0;
+        if (chimeBody && otherBody) {
+          const idx = chimeBody.chimeIndex ?? 2;
+          const pairKey = `chime-${chimeBody.id}-${otherBody.id}`;
+
+          const lastTime = lastPlayedMap.get(pairKey) || 0;
           if (now - lastTime > 60) {
-            lastPlayedMap.set(bodyA.id, now);
-            playChimeSound(idx);
+            lastPlayedMap.set(pairKey, now);
+
+            // Compute relative impact velocity magnitude
+            const relVelX = (bodyA.velocity?.x || 0) - (bodyB.velocity?.x || 0);
+            const relVelY = (bodyA.velocity?.y || 0) - (bodyB.velocity?.y || 0);
+            const impactSpeed = Math.hypot(relVelX, relVelY);
+
+            // Dynamic intensity (0.2 for whisper-soft contact to 1.0 for strong impact)
+            const intensity = Math.min(Math.max(impactSpeed / 3.5, 0.2), 1.0);
+
+            // Normalized X position for stereo spatial panner (-1.0 left to +1.0 right)
+            const posX = chimeBody.position ? chimeBody.position.x : (width / 2);
+            const normalizedX = (posX - (width / 2)) / (width / 2);
+
+            playChimeSound(idx, intensity, normalizedX);
           }
         }
       });
@@ -314,15 +503,33 @@ function App() {
 
     Matter.Events.on(engine, "collisionStart", handleCollisionStart);
 
-    // 8. Initialize Wind Field Cursor Controller (creates invisible airflow around cursor for all connected bodies)
+    // 8. Clamp maximum body speeds to guarantee physical stability during touchpad gestures
+    const dynamicBodies = [ballA, rectangleA, ...chimeRectangles];
+    const clampBodySpeeds = () => {
+      dynamicBodies.forEach((body) => {
+        const maxSpeed = 10;
+        if (body.speed > maxSpeed) {
+          Matter.Body.setVelocity(body, {
+            x: (body.velocity.x / body.speed) * maxSpeed,
+            y: (body.velocity.y / body.speed) * maxSpeed
+          });
+        }
+        if (Math.abs(body.angularVelocity) > 0.2) {
+          Matter.Body.setAngularVelocity(body, Math.sign(body.angularVelocity) * 0.2);
+        }
+      });
+    };
+    Matter.Events.on(engine, "beforeUpdate", clampBodySpeeds);
+
+    // 9. Initialize Wind Field Cursor Controller
     const cleanupWindCursor = initWindCursor({
       engine,
       render,
-      windBodies: [ballA, rectangleA, ...chimeRectangles],
+      windBodies: dynamicBodies,
       onUnlockAudio: resumeAudio
     });
 
-    // 9. Add all bodies and constraints to world
+    // 10. Add all bodies and constraints to world
     Matter.Composite.add(engine.world, [
       ballB,
       ballA,
@@ -334,14 +541,18 @@ function App() {
       ...chimeConstraints
     ]);
 
-    // 10. Run renderer and runner
+    // 11. Run renderer and runner with fixed 60 FPS timestep
     Matter.Render.run(render);
-    const runner = Matter.Runner.create();
+    const runner = Matter.Runner.create({
+      isFixed: true,
+      delta: 1000 / 60
+    });
     Matter.Runner.run(runner, engine);
 
     // Clean up on unmount
     return () => {
       cleanupWindCursor();
+      Matter.Events.off(engine, "beforeUpdate", clampBodySpeeds);
       Matter.Events.off(engine, "collisionStart", handleCollisionStart);
       Matter.Render.stop(render);
       Matter.Runner.stop(runner);
@@ -353,42 +564,9 @@ function App() {
     };
   }, []);
 
-  const handleTopMouseDown = (e) => {
-    if (e.button === 0) {
-      setWindowDraggingState(true);
-      if (window.electronAPI) {
-        window.electronAPI.startDrag({ x: e.screenX, y: e.screenY });
-      }
-
-      const onMouseMove = (moveEvent) => {
-        if (window.electronAPI) {
-          window.electronAPI.drag({ x: moveEvent.screenX, y: moveEvent.screenY });
-        }
-      };
-
-      const onMouseUp = () => {
-        setWindowDraggingState(false);
-        if (window.electronAPI) {
-          window.electronAPI.stopDrag();
-        }
-        window.removeEventListener("mousemove", onMouseMove);
-        window.removeEventListener("mouseup", onMouseUp);
-      };
-
-      window.addEventListener("mousemove", onMouseMove);
-      window.addEventListener("mouseup", onMouseUp);
-    }
-  };
-
   return (
     <div className="w-screen h-screen relative overflow-hidden flex justify-center items-center bg-transparent select-none">
-      {/* ballB Window Drag Handle Target */}
-      <div
-        onMouseDown={handleTopMouseDown}
-        style={{ WebkitAppRegion: "drag" }}
-        className="drag-handle-ballB absolute top-[2.5px] left-1/2 -translate-x-1/2 w-10 h-10 rounded-full cursor-grab active:cursor-grabbing z-[99999] pointer-events-auto"
-        title="Click & Drag top ball (ballB) to move Wind Chime widget"
-      />
+      <WidgetDragHandle />
       <div
         ref={sceneRef}
         className="w-full h-full overflow-hidden mx-auto relative"
