@@ -24,7 +24,6 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
   const prevMousePos = { x: -1000, y: -1000 };
   let lastTime = performance.now();
   let velocity = { x: 0, y: 0 };
-  let isPointerOnScreen = false;
 
   // Combine wind-responsive bodies (ballA, rectangleA, rectangleB, C, D, E, F)
   const targetBodies = windBodies.length > 0 ? windBodies : chimeRectangles;
@@ -33,7 +32,6 @@ export function initWindCursor({ engine, render, windBodies = [], chimeRectangle
   const activeGusts = new Map();
 
   const handleReset = () => {
-    isPointerOnScreen = false;
     mousePos.x = -1000;
     mousePos.y = -1000;
     prevMousePos.x = -1000;

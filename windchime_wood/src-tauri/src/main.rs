@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    qi_bell_lib::run()
+    windchime_wood_lib::run()
 }

@@ -5,9 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 /**
  * WidgetDragHandle Component
  * 
- * A completely transparent, invisible drag region overlay positioned right over ballB
- * (the top ball of the wind chime). Captures mouse/pointer drag events to move the
- * desktop wallpaper window without rendering any visible UI overlays.
+ * A transparent drag region overlay positioned over ballB (the top ball of the wind chime).
+ * Captures mouse/pointer drag events to move the Tauri desktop window.
  */
 export function WidgetDragHandle() {
   const isDraggingRef = useRef(false);

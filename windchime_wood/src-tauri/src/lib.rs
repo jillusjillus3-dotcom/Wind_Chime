@@ -64,7 +64,6 @@ fn load_position_from_disk(app: &AppHandle) -> Option<(i32, i32)> {
             if let Ok(settings) = serde_json::from_str::<WindowSettings>(&content) {
                 IS_POSITION_LOCKED.store(settings.locked, std::sync::atomic::Ordering::SeqCst);
                 IS_AUDIO_MUTED.store(settings.muted, std::sync::atomic::Ordering::SeqCst);
-                // Ignore minimized or off-screen coordinates (-32000 on Windows)
                 if settings.x > -10000 && settings.y > -10000 {
                     return Some((settings.x, settings.y));
                 }
@@ -94,7 +93,7 @@ fn get_work_area_bounds(
                 mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
                 if GetMonitorInfoW(h_mon, &mut mi as *mut MONITORINFO) != 0 {
                     let min_x = mi.rcWork.left + border;
-                    let min_y = mi.rcWork.top - 12; // Allows widget to go 2px higher up (y = -2)
+                    let min_y = mi.rcWork.top - 12;
                     let max_x = mi.rcWork.right - window_width - border;
                     let max_y = mi.rcWork.bottom - window_height - border;
                     return Some((min_x, min_y, max_x, max_y));
@@ -349,24 +348,23 @@ unsafe extern "system" fn wallpaper_subclass_proc(
             let cmd = (wparam & 0xFFF0) as u32;
             if cmd == SC_MINIMIZE || cmd == SC_RESTORE || cmd == SC_MAXIMIZE {
                 send_to_bottom(hwnd);
-                return 0; // Prevent minimize/restore (Exact Electron preventDefault logic)
+                return 0;
             }
         }
         WM_SHOWWINDOW => {
             if wparam == 0 && !ALLOW_HIDE.load(std::sync::atomic::Ordering::Relaxed) {
                 send_to_bottom(hwnd);
-                return 0; // Prevent hide
+                return 0;
             }
         }
         WM_WINDOWPOSCHANGING => {
             if lparam != 0 {
                 let pos = lparam as *mut WINDOWPOS;
-                // Intercept Win+D / Show Desktop off-screen movement to (-32000, -32000)
                 if (*pos).x <= -10000 || (*pos).y <= -10000 {
-                    (*pos).flags |= SWP_NOMOVE; // Block off-screen movement
+                    (*pos).flags |= SWP_NOMOVE;
                 }
                 if !ALLOW_HIDE.load(std::sync::atomic::Ordering::Relaxed) {
-                    (*pos).flags &= !SWP_HIDEWINDOW; // Strip hide flag
+                    (*pos).flags &= !SWP_HIDEWINDOW;
                 }
                 (*pos).hwndInsertAfter = HWND_BOTTOM;
             }
@@ -445,10 +443,7 @@ fn attach_to_desktop_wallpaper(window: &WebviewWindow) -> Result<(), String> {
 
     let raw_hwnd = get_window_hwnd(window)?;
 
-    println!("[DesktopWidget Debug] Window HWND: {:?}", raw_hwnd);
-
     unsafe {
-        // 1. Find Progman or fallback to GetDesktopWindow (Exact Electron logic)
         let progman = FindWindowA(b"Progman\0".as_ptr(), ptr::null());
         let desktop_owner = if progman != ptr::null_mut() {
             progman
@@ -456,19 +451,14 @@ fn attach_to_desktop_wallpaper(window: &WebviewWindow) -> Result<(), String> {
             GetDesktopWindow()
         };
 
-        println!("[DesktopWidget Debug] desktopOwner HWND: {:?}", desktop_owner);
-
-        // 2. Set desktop window as OWNER via GWLP_HWNDPARENT so Windows Shell ignores it during Win+D (Exact Electron logic)
         if desktop_owner != ptr::null_mut() {
             SetWindowLongPtrW(raw_hwnd, GWLP_HWNDPARENT, desktop_owner as isize);
         }
 
-        // 3. Apply WS_EX_NOACTIVATE & WS_EX_TOOLWINDOW extended styles (Exact Electron logic)
         let current_ex_style = GetWindowLongPtrW(raw_hwnd, GWL_EXSTYLE);
         let new_ex_style = (current_ex_style | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize);
         SetWindowLongPtrW(raw_hwnd, GWL_EXSTYLE, new_ex_style);
 
-        // 4. Keep WS_POPUP | WS_CLIPSIBLINGS style (borderless floating desktop widget)
         let style = GetWindowLongPtrW(raw_hwnd, GWL_STYLE);
         let new_style = (style
             & !(WS_CAPTION
@@ -479,12 +469,9 @@ fn attach_to_desktop_wallpaper(window: &WebviewWindow) -> Result<(), String> {
             | (WS_POPUP | WS_CLIPSIBLINGS) as isize;
         SetWindowLongPtrW(raw_hwnd, GWL_STYLE, new_style);
 
-        // 5. Subclass window safely using SetWindowSubclass
         use windows_sys::Win32::UI::Shell::SetWindowSubclass;
-        let sub_res = SetWindowSubclass(raw_hwnd, Some(wallpaper_subclass_proc), 1, 0);
-        println!("[DesktopWidget Debug] SetWindowSubclass returned: {}", sub_res);
+        SetWindowSubclass(raw_hwnd, Some(wallpaper_subclass_proc), 1, 0);
 
-        // 6. Subclass all child HWNDs (WebView2 inner renderer host)
         unsafe extern "system" fn enum_child_subclass_proc(
             child_hwnd: windows_sys::Win32::Foundation::HWND,
             _: windows_sys::Win32::Foundation::LPARAM,
@@ -495,9 +482,7 @@ fn attach_to_desktop_wallpaper(window: &WebviewWindow) -> Result<(), String> {
         }
         EnumChildWindows(raw_hwnd, Some(enum_child_subclass_proc), 0);
 
-        // 7. Initial push to HWND_BOTTOM (Exact Electron logic)
         send_to_bottom(raw_hwnd);
-        println!("[DesktopWidget Debug] Window successfully configured as Electron-style desktop widget!");
     }
 
     Ok(())
@@ -521,13 +506,9 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .setup(|app| {
-            // Automatically enable autostart on Windows boot
             let _ = app.autolaunch().enable();
-
-            // Load saved lock state before creating the tray menu so initial tray text is correct in production
             let _ = load_position_from_disk(app.handle());
 
-            // Build System Tray Menu & Icon
             let initial_lock_text = if IS_POSITION_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
                 "Unlock Position"
             } else {
@@ -610,6 +591,7 @@ pub fn run() {
                             if let Ok(current_exe) = std::env::current_exe() {
                                 if let Some(exe_dir) = current_exe.parent() {
                                     let candidates = [
+                                        exe_dir.join("Uninstall Wind Chime Wood.exe"),
                                         exe_dir.join("Uninstall Qi-Bell.exe"),
                                         exe_dir.join("uninstall.exe"),
                                         exe_dir.join("uninst.exe"),
@@ -694,15 +676,7 @@ pub fn run() {
                                     )
                                     .is_ok()
                                 {
-                                    match attach_to_desktop_wallpaper(win) {
-                                        Ok(_) => println!(
-                                            "[DesktopWidget] Window attached with Electron wallpaper pinning!"
-                                        ),
-                                        Err(e) => {
-                                            ATTACHED.store(false, std::sync::atomic::Ordering::Relaxed);
-                                            eprintln!("[DesktopWidget Warning] Attachment failed: {}", e);
-                                        }
-                                    }
+                                    let _ = attach_to_desktop_wallpaper(win);
                                 }
                             }
                         }
@@ -729,7 +703,6 @@ pub fn run() {
                         do_attach_event(&window_clone_event);
                     });
 
-                    // Heartbeat interval: sendToBottom every 1000ms (Exact Electron setInterval(sendToBottom, 1000))
                     tauri::async_runtime::spawn(async move {
                         loop {
                             std::thread::sleep(std::time::Duration::from_millis(1000));
