@@ -6,7 +6,11 @@ import woodAudioUrl from "./assets/wood.mp3";
 import ballBImg from "./assets/ballB.png";
 import ballAImg from "./assets/ballA.png";
 import rectangleAImg from "./assets/rectangleA.png";
-import rectangleImg from "./assets/rectangle.png";
+import bambo1Img from "./assets/bambo1.png";
+import bambo2Img from "./assets/bambo2.png";
+import bambo3Img from "./assets/bambo3.png";
+import bambo4Img from "./assets/bambo4.png";
+import bambo5Img from "./assets/bambo5.png";
 import { initWindCursor } from "./cursor.jsx";
 import WidgetDragHandle from "./drag.jsx";
 
@@ -14,6 +18,7 @@ function App() {
   const sceneRef = useRef(null);
   const audioCtxRef = useRef(null);
   const audioBufferRef = useRef(null);
+  const masterAudioNodeRef = useRef(null);
   const isMutedRef = useRef(false);
 
   useEffect(() => {
@@ -35,12 +40,39 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // Initialize Web Audio API for fast, overlapping chime sounds
+    // Initialize Web Audio API for zero-latency, overlapping wind chime acoustics
     const initAudio = async () => {
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         const ctx = new AudioCtx({ latencyHint: "interactive" });
         audioCtxRef.current = ctx;
+
+        // Master Dynamics Compressor + Master Volume Gain Boost (1.8x)
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = -12; // dB threshold to prevent clipping
+        compressor.knee.value = 10;
+        compressor.ratio.value = 6;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.15;
+
+        const masterGain = ctx.createGain();
+        masterGain.gain.value = 1.8; // Boost master volume to 180%
+
+        compressor.connect(masterGain);
+        masterGain.connect(ctx.destination);
+        masterAudioNodeRef.current = compressor;
+
+        // Silent Keep-Alive Oscillator (prevents audio hardware thread sleep)
+        try {
+          const keepAliveOsc = ctx.createOscillator();
+          const keepAliveGain = ctx.createGain();
+          keepAliveGain.gain.value = 0.000001;
+          keepAliveOsc.connect(keepAliveGain);
+          keepAliveGain.connect(ctx.destination);
+          keepAliveOsc.start(0);
+        } catch (e) {
+          console.warn("Keep-alive oscillator error:", e);
+        }
 
         const unlock = () => {
           if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
@@ -48,10 +80,12 @@ function App() {
           }
         };
 
+        window.addEventListener("pointermove", unlock, { passive: true });
         window.addEventListener("pointerdown", unlock, { passive: true });
         window.addEventListener("mousedown", unlock, { passive: true });
         window.addEventListener("mousemove", unlock, { passive: true });
         window.addEventListener("keydown", unlock, { passive: true });
+        window.addEventListener("mouseenter", unlock, { passive: true });
 
         const response = await fetch(woodAudioUrl);
         const arrayBuffer = await response.arrayBuffer();
@@ -70,40 +104,74 @@ function App() {
     }
   };
 
-  const playChimeSound = (chimeIndex = 2) => {
+  /**
+   * Zero-Latency Wind Chime Sound Engine via Web Audio API:
+   * 1. Silent Keep-Alive Thread: AudioContext stays in 'running' state perpetually.
+   * 2. Harmonic Pentatonic Scale Tuning: [0.75, 0.8889, 1.0, 1.125, 1.3333]
+   * 3. Organic Micro-Detuning: +/- 1.2% variance per strike.
+   * 4. Dynamic Gain & Exponential Decay Envelope: Instant attack on impact.
+   */
+  const playChimeSound = (chimeIndex = 2, impactEnergy = 0.6) => {
     if (isMutedRef.current) return;
     resumeAudio();
 
-    if (audioCtxRef.current && audioBufferRef.current) {
-      const source = audioCtxRef.current.createBufferSource();
+    const ctx = audioCtxRef.current;
+    if (ctx && audioBufferRef.current) {
+      const now = ctx.currentTime;
+      const source = ctx.createBufferSource();
       source.buffer = audioBufferRef.current;
 
-      // Unique pitch for each chime tube (B: 0.85, C: 0.95, D: 1.0, E: 1.1, F: 1.22)
-      const pitches = [0.85, 0.95, 1.0, 1.1, 1.22];
-      source.playbackRate.value = pitches[chimeIndex] || 1.0;
+      // 1. Pentatonic Scale Ratios for Chimes (B, C, D, E, F)
+      const pentatonicPitches = [0.75, 0.8889, 1.0, 1.125, 1.3333];
+      const basePitch = pentatonicPitches[chimeIndex] || 1.0;
 
-      // 1. Lowshelf filter to boost bass frequencies below 350 Hz (+8 dB)
-      const bassFilter = audioCtxRef.current.createBiquadFilter();
+      // Organic micro-detuning (+/- 1.2% variation per strike)
+      const microDetune = 1.0 + (Math.random() - 0.5) * 0.024;
+      source.playbackRate.value = basePitch * microDetune;
+
+      // 2. High Volume Gain Scaling (0.5 to 1.6 gain range per chime voice)
+      const normEnergy = Math.min(Math.max(impactEnergy, 0.25), 1.0);
+      const strikeVolume = 0.5 + normEnergy * 1.1;
+
+      // 3. Instant Attack & Exponential Gain Decay Envelope
+      const gainNode = ctx.createGain();
+      const decayDuration = 0.9 + normEnergy * 1.3; // 0.9s to 2.2s decay
+      gainNode.gain.setValueAtTime(strikeVolume, now);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, now + decayDuration);
+
+      // 4. Acoustic Wooden Filters:
+      // a) Lowshelf filter: Boosts 280 Hz (+8 dB) for deep wooden body resonance
+      const bassFilter = ctx.createBiquadFilter();
       bassFilter.type = "lowshelf";
-      bassFilter.frequency.value = 350;
+      bassFilter.frequency.value = 280;
       bassFilter.gain.value = 8;
 
-      // 2. Lowpass filter to reduce treble and give a warm wooden sound
-      const trebleFilter = audioCtxRef.current.createBiquadFilter();
-      trebleFilter.type = "lowpass";
-      trebleFilter.frequency.value = 1800; // Cut off high treble frequencies above 1800 Hz
+      // b) Peaking Filter: Hollow wooden tube cavity resonance (850 Hz, Q=2.5, +5 dB)
+      const tubeResonanceFilter = ctx.createBiquadFilter();
+      tubeResonanceFilter.type = "peaking";
+      tubeResonanceFilter.frequency.value = 850;
+      tubeResonanceFilter.Q.value = 2.5;
+      tubeResonanceFilter.gain.value = 5;
 
-      const gainNode = audioCtxRef.current.createGain();
-      gainNode.gain.value = 0.8;
+      // c) Lowpass Filter: Warm wooden cutoff above 1900 Hz
+      const trebleFilter = ctx.createBiquadFilter();
+      trebleFilter.type = "lowpass";
+      trebleFilter.frequency.value = 1900;
 
       source.connect(bassFilter);
-      bassFilter.connect(trebleFilter);
+      bassFilter.connect(tubeResonanceFilter);
+      tubeResonanceFilter.connect(trebleFilter);
       trebleFilter.connect(gainNode);
-      gainNode.connect(audioCtxRef.current.destination);
-      source.start(0);
+
+      // Route through Master Dynamics Compressor & Master Gain Boost
+      const destinationNode = masterAudioNodeRef.current || ctx.destination;
+      gainNode.connect(destinationNode);
+
+      source.start(now);
+      source.stop(now + decayDuration + 0.1);
     } else {
       const audio = new Audio(woodAudioUrl);
-      audio.volume = 0.7;
+      audio.volume = 1.0;
       audio.play().catch(() => {});
     }
   };
@@ -191,7 +259,7 @@ function App() {
       }
     });
 
-    // 4. Heavy dynamic horizontal top beam (rectangleA) with rectangleA.png image texture
+    // 4. Heavy dynamic horizontal top beam (rectangleA) with new rectangleA.png image texture (90x16 px)
     const rectangleAWidth = 120 * SCALE;
     const rectangleAHeight = 20 * SCALE;
     const rectangleAY = 130 * SCALE;
@@ -209,8 +277,8 @@ function App() {
         render: {
           sprite: {
             texture: rectangleAImg,
-            xScale: rectangleAWidth / 670,
-            yScale: rectangleAHeight / 164
+            xScale: rectangleAWidth / 90,
+            yScale: rectangleAHeight / 16
           }
         }
       }
@@ -261,13 +329,13 @@ function App() {
       }
     });
 
-    // 6. Create 5 vertically long rectangles (rectangleB, C, D, E, F) with wood texture finish (75% scaled)
+    // 6. Create 5 vertically long rectangles (rectangleB, C, D, E, F) mapped to bambo1.png - bambo5.png
     const chimeConfigs = [
-      { name: "rectangleB", offsetX: -40 * SCALE, height: 140 * SCALE, color: "#cbd5e1", constraintLength: 90 * SCALE,  stiffness: 0.68, damping: 0.05, mass: 2.0 * SCALE, frictionAir: 0.018 },
-      { name: "rectangleC", offsetX: -20 * SCALE, height: 160 * SCALE, color: "#cbd5e1", constraintLength: 105 * SCALE, stiffness: 0.64, damping: 0.06, mass: 2.6 * SCALE, frictionAir: 0.014 },
-      { name: "rectangleD", offsetX: 0,           height: 180 * SCALE, color: "#cbd5e1", constraintLength: 120 * SCALE, stiffness: 0.58, damping: 0.08, mass: 3.2 * SCALE, frictionAir: 0.011 },
-      { name: "rectangleE", offsetX: 20 * SCALE,  height: 160 * SCALE, color: "#cbd5e1", constraintLength: 100 * SCALE, stiffness: 0.62, damping: 0.06, mass: 2.4 * SCALE, frictionAir: 0.016 },
-      { name: "rectangleF", offsetX: 40 * SCALE,  height: 140 * SCALE, color: "#cbd5e1", constraintLength: 85 * SCALE,  stiffness: 0.70, damping: 0.04, mass: 1.8 * SCALE, frictionAir: 0.020 },
+      { name: "rectangleB", offsetX: -40 * SCALE, height: 140 * SCALE, color: "#cbd5e1", constraintLength: 90 * SCALE,  stiffness: 0.68, damping: 0.05, mass: 2.0 * SCALE, frictionAir: 0.018, texture: bambo1Img, texW: 178, texH: 1479 },
+      { name: "rectangleC", offsetX: -20 * SCALE, height: 160 * SCALE, color: "#cbd5e1", constraintLength: 105 * SCALE, stiffness: 0.64, damping: 0.06, mass: 2.6 * SCALE, frictionAir: 0.014, texture: bambo2Img, texW: 212, texH: 1492 },
+      { name: "rectangleD", offsetX: 0,           height: 180 * SCALE, color: "#cbd5e1", constraintLength: 120 * SCALE, stiffness: 0.58, damping: 0.08, mass: 3.2 * SCALE, frictionAir: 0.011, texture: bambo3Img, texW: 181, texH: 1477 },
+      { name: "rectangleE", offsetX: 20 * SCALE,  height: 160 * SCALE, color: "#cbd5e1", constraintLength: 100 * SCALE, stiffness: 0.62, damping: 0.06, mass: 2.4 * SCALE, frictionAir: 0.016, texture: bambo4Img, texW: 186, texH: 1479 },
+      { name: "rectangleF", offsetX: 40 * SCALE,  height: 140 * SCALE, color: "#cbd5e1", constraintLength: 85 * SCALE,  stiffness: 0.70, damping: 0.04, mass: 1.8 * SCALE, frictionAir: 0.020, texture: bambo5Img, texW: 178, texH: 1477 },
     ];
 
     const chimeWidth = 16 * SCALE;
@@ -292,9 +360,9 @@ function App() {
           frictionAir: cfg.frictionAir,
           render: {
             sprite: {
-              texture: rectangleImg,
-              xScale: chimeWidth / 149,
-              yScale: cfg.height / 1388
+              texture: cfg.texture,
+              xScale: chimeWidth / cfg.texW,
+              yScale: cfg.height / cfg.texH
             }
           }
         }
@@ -323,7 +391,7 @@ function App() {
       chimeConstraints.push(c);
     });
 
-    // 7. Collision detection for playing chime audio on chime impacts
+    // 7. Collision detection for playing wind chime audio with realistic impact velocity & cascading micro-rhythms
     const lastPlayedMap = new Map();
 
     const handleCollisionStart = (event) => {
@@ -348,7 +416,22 @@ function App() {
           const lastTime = lastPlayedMap.get(pairKey) || 0;
           if (now - lastTime > 60) {
             lastPlayedMap.set(pairKey, now);
-            playChimeSound(idx);
+
+            // Calculate impact energy from relative velocities of colliding bodies
+            const relVx = bodyA.velocity.x - bodyB.velocity.x;
+            const relVy = bodyA.velocity.y - bodyB.velocity.y;
+            const relSpeed = Math.hypot(relVx, relVy);
+            const impactEnergy = Math.min(Math.max(relSpeed / 3.5, 0.25), 1.0);
+
+            playChimeSound(idx, impactEnergy);
+
+            // Sympathetic secondary echo tap for strong wind gust impacts
+            if (impactEnergy > 0.6) {
+              const secondaryIdx = otherBody.chimeIndex ?? ((idx + 1) % 5);
+              setTimeout(() => {
+                playChimeSound(secondaryIdx, impactEnergy * 0.45);
+              }, 70 + Math.random() * 50);
+            }
           }
         }
       });
