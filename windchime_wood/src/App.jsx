@@ -198,7 +198,7 @@ function App() {
     // 75% Global Scale Factor for Wind Chime Structure
     const SCALE = 0.75;
 
-    // 2. Small static ball at top (ballB) with ballB.png image texture
+    // 2. Small static ball at top (ballB) with new ballB.png image texture (10x9 px)
     const ballBRadius = 6 * SCALE;
     const ballB = Matter.Bodies.circle(
       width / 2,
@@ -211,14 +211,14 @@ function App() {
         render: {
           sprite: {
             texture: ballBImg,
-            xScale: (2 * ballBRadius) / 428,
-            yScale: (2 * ballBRadius) / 401
+            xScale: (2 * ballBRadius) / 10,
+            yScale: (2 * ballBRadius) / 9
           }
         }
       }
     );
 
-    // 3. Dynamic ball below ballB (ballA) with ballA.png image texture
+    // 3. Dynamic ball below ballB (ballA) with new ballA.png image texture (15x15 px)
     const ballARadius = 10 * SCALE;
     const ballA = Matter.Bodies.circle(
       width / 2,
@@ -234,8 +234,8 @@ function App() {
         render: {
           sprite: {
             texture: ballAImg,
-            xScale: (2 * ballARadius) / 1920,
-            yScale: (2 * ballARadius) / 1920
+            xScale: (2 * ballARadius) / 15,
+            yScale: (2 * ballARadius) / 15
           }
         }
       }
@@ -246,9 +246,9 @@ function App() {
     const constraintBallBToBallA = Matter.Constraint.create({
       bodyA: ballB,
       bodyB: ballA,
-      pointA: { x: 0, y: ballBRadius }, // Connected to bottom edge of ballB
-      pointB: { x: 0, y: -ballARadius }, // Connected to top edge of ballA
-      length: (30 - 6 - 10) * SCALE,
+      pointA: { x: 0, y: ballBRadius - 1 }, // Extended 1px into ballB (top)
+      pointB: { x: 0, y: -ballARadius + 1 }, // Extended 1px into ballA (bottom)
+      length: ((30 - 6 - 10) * SCALE) + 2, // Extended by 2px total (1px top + 1px bottom)
       stiffness: 1, // Rigid constraint
       render: {
         visible: true,
@@ -295,13 +295,13 @@ function App() {
     const stringLength = Math.hypot(
       rectAAttachX - ballAAttachX,
       (rectangleAY - rectangleAHeight / 2) - (ballAY + ballAAttachY)
-    );
+    ) + 3.5; // Increased size by 3.5px (1px top + 2.5px bottom)
 
     const constraintLeft = Matter.Constraint.create({
       bodyA: ballA,
       bodyB: rectangleA,
-      pointA: { x: -ballAAttachX, y: ballAAttachY }, // Connected to bottom-left edge of ballA
-      pointB: { x: -rectAAttachX, y: -rectangleAHeight / 2 }, // Balanced inner anchor on top of rectangleA
+      pointA: { x: -ballAAttachX, y: ballAAttachY - 1 }, // Extended 1px into ballA (top)
+      pointB: { x: -rectAAttachX, y: (-rectangleAHeight / 2) + 2.5 }, // Extended 2.5px into rectangleA (bottom)
       length: stringLength,
       stiffness: 1,
       render: {
@@ -316,8 +316,8 @@ function App() {
     const constraintRight = Matter.Constraint.create({
       bodyA: ballA,
       bodyB: rectangleA,
-      pointA: { x: ballAAttachX, y: ballAAttachY }, // Connected to bottom-right edge of ballA
-      pointB: { x: rectAAttachX, y: -rectangleAHeight / 2 }, // Balanced inner anchor on top of rectangleA
+      pointA: { x: ballAAttachX, y: ballAAttachY - 1 }, // Extended 1px into ballA (top)
+      pointB: { x: rectAAttachX, y: (-rectangleAHeight / 2) + 2.5 }, // Extended 2.5px into rectangleA (bottom)
       length: stringLength,
       stiffness: 1,
       render: {
@@ -371,13 +371,25 @@ function App() {
       Matter.Body.setMass(chime, cfg.mass);
       chimeRectangles.push(chime);
 
+      // Anchor point on rectangleA (offset 2px above bottom edge of rectangleA for rectangleD, 0.8px for rectangleB)
+      let anchorYOnRectA = rectangleAHeight / 2;
+      let effectiveLength = cfg.constraintLength;
+
+      if (cfg.name === "rectangleD") {
+        anchorYOnRectA = (rectangleAHeight / 2) - 2;
+        effectiveLength = cfg.constraintLength - 2;
+      } else if (cfg.name === "rectangleB") {
+        anchorYOnRectA = (rectangleAHeight / 2) - 0.8;
+        effectiveLength = cfg.constraintLength + 0.8;
+      }
+
       // Constraint connecting rectangleA to the top of this chime
       const c = Matter.Constraint.create({
         bodyA: rectangleA,
         bodyB: chime,
-        pointA: { x: cfg.offsetX, y: rectangleAHeight / 2 },
+        pointA: { x: cfg.offsetX, y: anchorYOnRectA },
         pointB: { x: 0, y: -cfg.height / 2 }, // Connected to top edge of rectangle
-        length: cfg.constraintLength,
+        length: effectiveLength,
         stiffness: cfg.stiffness,
         damping: cfg.damping,
         render: {

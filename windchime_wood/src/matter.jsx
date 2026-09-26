@@ -128,13 +128,13 @@ export default function MatterScene({ playChimeSound, resumeAudio }) {
     const stringLength = Math.hypot(
       rectAAttachX - ballAAttachX,
       (rectangleAY - rectangleAHeight / 2) - (ballAY + ballAAttachY)
-    );
+    ) + 3.5; // Increased size by 3.5px (1px top + 2.5px bottom)
 
     const constraintLeft = Matter.Constraint.create({
       bodyA: ballA,
       bodyB: rectangleA,
-      pointA: { x: -ballAAttachX, y: ballAAttachY },
-      pointB: { x: -rectAAttachX, y: -rectangleAHeight / 2 },
+      pointA: { x: -ballAAttachX, y: ballAAttachY - 1 },
+      pointB: { x: -rectAAttachX, y: (-rectangleAHeight / 2) + 2.5 },
       length: stringLength,
       stiffness: 1,
       render: {
@@ -149,8 +149,8 @@ export default function MatterScene({ playChimeSound, resumeAudio }) {
     const constraintRight = Matter.Constraint.create({
       bodyA: ballA,
       bodyB: rectangleA,
-      pointA: { x: ballAAttachX, y: ballAAttachY },
-      pointB: { x: rectAAttachX, y: -rectangleAHeight / 2 },
+      pointA: { x: ballAAttachX, y: ballAAttachY - 1 },
+      pointB: { x: rectAAttachX, y: (-rectangleAHeight / 2) + 2.5 },
       length: stringLength,
       stiffness: 1,
       render: {
@@ -204,12 +204,24 @@ export default function MatterScene({ playChimeSound, resumeAudio }) {
       Matter.Body.setMass(chime, cfg.mass);
       chimeRectangles.push(chime);
 
+      // Anchor point on rectangleA (offset 2px above bottom edge of rectangleA for rectangleD, 0.8px for rectangleB)
+      let anchorYOnRectA = rectangleAHeight / 2;
+      let effectiveLength = cfg.constraintLength;
+
+      if (cfg.name === "rectangleD") {
+        anchorYOnRectA = (rectangleAHeight / 2) - 2;
+        effectiveLength = cfg.constraintLength - 2;
+      } else if (cfg.name === "rectangleB") {
+        anchorYOnRectA = (rectangleAHeight / 2) - 0.8;
+        effectiveLength = cfg.constraintLength + 0.8;
+      }
+
       const c = Matter.Constraint.create({
         bodyA: rectangleA,
         bodyB: chime,
-        pointA: { x: cfg.offsetX, y: rectangleAHeight / 2 },
+        pointA: { x: cfg.offsetX, y: anchorYOnRectA },
         pointB: { x: 0, y: -cfg.height / 2 },
-        length: cfg.constraintLength,
+        length: effectiveLength,
         stiffness: cfg.stiffness,
         damping: cfg.damping,
         render: {
